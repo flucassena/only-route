@@ -1,7 +1,7 @@
 // OnlyRoute: the same thing as onlyroute.ps1, with windows instead of a terminal.
 // It uses the same Docker image, container name, hosts marker and vault entries,
 // so the app and the script see each other's connection.
-const { app, BrowserWindow, ipcMain, safeStorage, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, dialog, Tray, Menu, nativeImage, shell, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -65,6 +65,57 @@ async function docker(args, input) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------------------------------------------------------- docker
+// Never assume Docker is already running: the app checks, asks the user to open
+// it (or opens it), keeps checking and carries on by itself once it's ready.
+
+const DOCKER_DESKTOP = {
+  win32: [path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker', 'Docker', 'Docker Desktop.exe')],
+  darwin: ['/Applications/Docker.app'],
+  linux: ['/opt/docker-desktop/bin/com.docker.backend', '/usr/bin/dockerd', '/usr/sbin/dockerd', '/snap/bin/docker'],
+}[process.platform] || [];
+
+const DOCKER_DOWNLOAD = 'https://www.docker.com/products/docker-desktop/';
+
+// Is the Docker engine answering?
+async function dockerUp() {
+  const r = await docker(['version', '--format', '{{.Server.Version}}']);
+  return r.code === 0 && !!r.stdout.trim();
+}
+
+// Is Docker installed at all (the command or Docker Desktop)?
+async function dockerInstalled() {
+  if (DOCKER_DESKTOP.some((p) => fs.existsSync(p))) return true;
+  return !(await docker(['--version'])).enoent;
+}
+
+// Opens Docker Desktop (or starts the Docker service on Linux). Doesn't wait.
+async function startDocker() {
+  if (IS_WIN) {
+    const exe = DOCKER_DESKTOP.find((p) => fs.existsSync(p));
+    if (!exe) return false;
+    spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+    return true;
+  }
+  if (IS_MAC) return (await run('open', ['-a', 'Docker'])).code === 0;
+  // Linux: Docker Desktop runs as a user service; Docker Engine as a system service.
+  if ((await run('systemctl', ['--user', 'start', 'docker-desktop'])).code === 0) return true;
+  return (await runAsRoot('systemctl start docker')).code === 0;
+}
+
+// The PPP line discipline must be loaded in Docker's Linux kernel for pppd to
+// build the tunnel. Newer kernels (e.g. recent WSL 2) ship it as a module that
+// a container can't load ("Couldn't set tty to PPP discipline: Operation not
+// permitted"), so it's loaded once from a short-lived privileged container.
+// It lasts until Docker restarts, so this runs before every connection.
+async function ensurePpp() {
+  const hasPpp = async () => /^ppp\s/m.test((await docker(['run', '--rm', '--entrypoint', 'cat', IMAGE, '/proc/tty/ldiscs'])).stdout);
+  if (await hasPpp()) return true;
+  await docker(['run', '--rm', '--privileged', '--pid=host', '--entrypoint', 'nsenter', IMAGE,
+    '-t', '1', '-m', 'modprobe', 'ppp_async']);
+  return hasPpp();
+}
+
 // ---------------------------------------------------------------- config
 
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
@@ -89,6 +140,18 @@ function loadConfig() {
 function saveConfig(c) {
   fs.mkdirSync(path.dirname(configFile()), { recursive: true });
   fs.writeFileSync(configFile(), JSON.stringify(c, null, 2), 'utf8');
+}
+
+// ---------------------------------------------------------------- language
+// Portuguese or English: what the user picked in the app (config.lang), else
+// the system language. L('texto', 'text') returns the one in use.
+let lang = 'en';
+const L = (pt, en) => (lang === 'pt' ? pt : en);
+function pickLang() {
+  const c = loadConfig();
+  if (c.lang === 'pt' || c.lang === 'en') return (lang = c.lang);
+  const sys = (app.getPreferredSystemLanguages && app.getPreferredSystemLanguages()[0]) || app.getLocale() || '';
+  lang = /^pt/i.test(sys) ? 'pt' : 'en';
 }
 
 // Old versions kept the password in config.json, encrypted with DPAPI. Only used
@@ -302,13 +365,13 @@ function vpnName(id) {
 
 function statusText() {
   switch (state.phase) {
-    case 'connected': return `Ligada: ${vpnName(state.vpnId)}`;
-    case 'code': return 'Esperando o código de verificação';
-    case 'building': case 'connecting': return state.message || 'Conectando...';
-    case 'nodocker': return 'Docker Desktop não está rodando';
-    case 'error': return 'Não conectou';
-    case 'checking': return 'Verificando...';
-    default: return 'Desligada';
+    case 'connected': return L(`Ligada: ${vpnName(state.vpnId)}`, `On: ${vpnName(state.vpnId)}`);
+    case 'code': return L('Esperando o código de verificação', 'Waiting for the verification code');
+    case 'building': case 'connecting': return state.message || L('Conectando...', 'Connecting...');
+    case 'nodocker': return state.starting || state.vpnId ? L('Esperando o Docker abrir', 'Waiting for Docker to open') : L('O Docker não está aberto', 'Docker is not open');
+    case 'error': return L('Não conectou', 'Could not connect');
+    case 'checking': return L('Verificando...', 'Checking...');
+    default: return L('Desligada', 'Off');
   }
 }
 
@@ -327,17 +390,17 @@ function updateTray(was = {}) {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: statusText(), enabled: false },
     { type: 'separator' },
-    { label: 'Abrir', click: showWindow },
-    { label: 'Desconectar', enabled: state.phase === 'connected' || busy, click: () => disconnect() },
+    { label: L('Abrir', 'Open'), click: showWindow },
+    { label: L('Desconectar', 'Disconnect'), enabled: state.phase === 'connected' || busy, click: () => disconnect() },
     { type: 'separator' },
-    { label: 'Sair', click: () => { quitting = true; app.quit(); } },
+    { label: L('Sair', 'Quit'), click: () => { quitting = true; app.quit(); } },
   ]));
   // Tell the user when something changes while the window is hidden.
   if (win && !win.isVisible()) {
     if (state.phase === 'connected' && was.phase !== 'connected') {
-      tray.displayBalloon({ title: 'VPN ligada', content: vpnName(state.vpnId) });
+      tray.displayBalloon({ title: L('VPN ligada', 'VPN on'), content: vpnName(state.vpnId) });
     } else if (was.phase === 'connected' && state.phase === 'idle') {
-      tray.displayBalloon({ title: 'A VPN desligou', content: 'Abra o OnlyRoute para conectar de novo.', iconType: 'warning' });
+      tray.displayBalloon({ title: L('A VPN desligou', 'The VPN went off'), content: L('Abra o OnlyRoute para conectar de novo.', 'Open OnlyRoute to connect again.'), iconType: 'warning' });
     } else if (state.phase === 'code' && was.phase !== 'code') {
       showWindow(); // the 2FA code has to be typed in the window
     }
@@ -378,10 +441,29 @@ async function containerInfo() {
 
 const removeContainers = () => docker(['rm', '-f', NAME, LEGACY.name]);
 
+// A connection asked while Docker was closed: it starts by itself once Docker is up.
+let waitingConnect = null; // { id, password }
+let dockerOpening = false;
+
+function setNoDocker(installed) {
+  setState({ phase: 'nodocker', installed, starting: dockerOpening, vpnId: waitingConnect ? waitingConnect.id : undefined });
+}
+
+async function openDocker() {
+  dockerOpening = true;
+  if (!(await startDocker())) dockerOpening = false;
+  if (!(await dockerUp())) setNoDocker(await dockerInstalled());
+}
+
 async function refresh() {
   if (['building', 'connecting', 'code'].includes(state.phase)) return;
-  const v = await docker(['version', '--format', '{{.Server.Version}}']);
-  if (v.code !== 0) return setState({ phase: 'nodocker' });
+  if (!(await dockerUp())) return setNoDocker(await dockerInstalled());
+  dockerOpening = false;
+  if (waitingConnect) {
+    const w = waitingConnect;
+    waitingConnect = null;
+    return connect(w.id, w.password);
+  }
   const info = await containerInfo();
   if (info && info.running && /Tunnel is up/.test(await readLog(info.name))) {
     return setState({ phase: 'connected', vpnId: info.vpn });
@@ -405,31 +487,45 @@ async function connect(id, typedPassword) {
     setState({ phase: 'error', vpnId: id, message });
   };
 
-  setState({ phase: 'connecting', vpnId: id, message: 'Preparando...' });
-  if (!(await docker(['version', '--format', '{{.Server.Version}}'])).stdout.trim()) {
-    return setState({ phase: 'nodocker' });
+  setState({ phase: 'connecting', vpnId: id, message: L('Preparando...', 'Getting ready...') });
+  if (!(await dockerUp())) {
+    // Opens Docker and waits; refresh() comes back here once it answers.
+    waitingConnect = { id, password: typedPassword };
+    if (await dockerInstalled()) await openDocker();
+    else setNoDocker(false);
+    return;
   }
   await removeContainers();
 
+  if (!hostsUpToDate(expectedHostsLines(c))) {
+    setState({ phase: 'connecting', vpnId: id, message: IS_WIN
+      ? L('Atualizando o arquivo hosts: clique em "Sim" no pedido de permissão do Windows.', 'Updating the hosts file: click "Yes" on the Windows permission prompt.')
+      : L('Atualizando o /etc/hosts: digite a senha de administrador quando o sistema pedir.', 'Updating /etc/hosts: type the administrator password when the system asks.') });
+    if (win && !win.isVisible()) showWindow();
+  }
   if (!(await syncHosts())) {
     return fail(IS_WIN
-      ? 'O arquivo hosts não foi atualizado. Clique em "Sim" no pedido de permissão do Windows.'
-      : 'O arquivo /etc/hosts não foi atualizado. Digite a senha de administrador quando o sistema pedir.');
+      ? L('O arquivo hosts não foi atualizado. Clique em "Sim" no pedido de permissão do Windows.', 'The hosts file was not updated. Click "Yes" on the Windows permission prompt.')
+      : L('O arquivo /etc/hosts não foi atualizado. Digite a senha de administrador quando o sistema pedir.', '/etc/hosts was not updated. Type the administrator password when the system asks.'));
   }
   if (!(await ensureAliases())) {
-    return fail('Não consegui criar os endereços locais (127.0.0.x). Digite a senha de administrador quando o sistema pedir.');
+    return fail(L('Não consegui criar os endereços locais (127.0.0.x). Digite a senha de administrador quando o sistema pedir.', 'Could not create the local addresses (127.0.0.x). Type the administrator password when the system asks.'));
   }
   if (!live()) return;
 
   if ((await docker(['image', 'inspect', IMAGE])).code !== 0
       && (await docker(['tag', LEGACY.image, IMAGE])).code !== 0) { // reuses the old image if there is one
-    setState({ phase: 'building', vpnId: id, message: 'Primeira vez: montando a imagem (cerca de 1 minuto)...' });
+    setState({ phase: 'building', vpnId: id, message: L('Primeira vez: montando a imagem (cerca de 1 minuto)...', 'First time: building the image (about 1 minute)...') });
     const b = await docker(['build', '-t', IMAGE, DOCKER_DIR]);
-    if (b.code !== 0) return fail('Falha ao montar a imagem Docker:\n' + logTail(b.stderr || b.stdout));
+    if (b.code !== 0) return fail(L('Falha ao montar a imagem Docker:\n', 'Could not build the Docker image:\n') + logTail(b.stderr || b.stdout));
     if (!live()) return;
   }
 
-  setState({ phase: 'connecting', vpnId: id, message: 'Conectando...' });
+  setState({ phase: 'connecting', vpnId: id, message: L('Preparando o túnel...', 'Preparing the tunnel...') });
+  const pppOk = await ensurePpp();
+  if (!live()) return;
+
+  setState({ phase: 'connecting', vpnId: id, message: L('Conectando...', 'Connecting...') });
   const ips = hostIps(c);
   const portArgs = [];
   const forwards = [];
@@ -442,18 +538,16 @@ async function connect(id, typedPassword) {
   }
   const r = await docker([
     'run', '-d', '--name', NAME, '--label', `${LABEL}=${v.id}`,
-    // SYS_ADMIN: on some Docker/WSL kernels pppd needs it to turn on the PPP
-    // line discipline ("Couldn't set tty to PPP discipline").
-    '--cap-add', 'NET_ADMIN', '--cap-add', 'SYS_ADMIN', '--device', '/dev/ppp', ...portArgs,
+    '--cap-add', 'NET_ADMIN', '--device', '/dev/ppp', ...portArgs,
     '-e', `VPN_HOST=${v.gateway}`, '-e', `VPN_PORT=${v.port || 10443}`, '-e', `VPN_USER=${user}`,
     '-e', `FORWARDS=${forwards.join(' ')}`, '-e', `TRUSTED_CERT=${v.trustedCert || ''}`,
     '-e', 'DETACHED=1', IMAGE,
   ]);
   if (r.code !== 0) {
     let msg = logTail(r.stderr);
-    if (/port is already allocated|bind/i.test(r.stderr)) msg = 'Uma porta local já está em uso (outro programa, ou o FortiClient?).\n' + msg;
-    else if (/\/dev\/ppp/.test(r.stderr)) msg = 'Falta o /dev/ppp. No Linux, rode: sudo modprobe ppp_generic\n' + msg;
-    else if (/permission denied/i.test(r.stderr)) msg = 'Seu usuário não tem permissão no Docker. No Linux: sudo usermod -aG docker $USER e entre de novo na sessão.\n' + msg;
+    if (/port is already allocated|bind/i.test(r.stderr)) msg = L('Uma porta local já está em uso (outro programa, ou o FortiClient?).\n', 'A local port is already in use (another program, or FortiClient?).\n') + msg;
+    else if (/\/dev\/ppp/.test(r.stderr)) msg = L('Falta o /dev/ppp. No Linux, rode: sudo modprobe ppp_generic\n', '/dev/ppp is missing. On Linux, run: sudo modprobe ppp_generic\n') + msg;
+    else if (/permission denied/i.test(r.stderr)) msg = L('Seu usuário não tem permissão no Docker. No Linux: sudo usermod -aG docker $USER e entre de novo na sessão.\n', 'Your user has no permission on Docker. On Linux: sudo usermod -aG docker $USER and log in again.\n') + msg;
     return fail(msg);
   }
 
@@ -469,8 +563,14 @@ async function connect(id, typedPassword) {
     const info = await containerInfo();
     const log = await readLog();
     if (!info || !info.running) {
-      let msg = logTail(log) || 'A VPN parou sem mensagem.';
-      if (/Could not authenticate|Permission denied|authentication failed/i.test(log)) msg = 'Usuário, senha ou código errado.\n\n' + msg;
+      let msg = logTail(log) || L('A VPN parou sem mensagem.', 'The VPN stopped with no message.');
+      if (/Could not authenticate|Permission denied|authentication failed/i.test(log)) msg = L('Usuário, senha ou código errado.\n\n', 'Wrong user, password or code.\n\n') + msg;
+      else if (/pppd: An immediately fatal error/i.test(log)) {
+        msg = (pppOk
+          ? L('O login funcionou, mas o Docker não deixou montar o túnel. Feche e abra o Docker Desktop e tente de novo.', 'The login worked, but Docker did not let the tunnel start. Close and reopen Docker Desktop and try again.')
+          : L('O login funcionou, mas o Linux do Docker não tem suporte a PPP ligado. No PowerShell, rode "wsl --update", reinicie o Docker Desktop e tente de novo.', 'The login worked, but Docker\'s Linux has no PPP support turned on. In PowerShell, run "wsl --update", restart Docker Desktop and try again.'))
+          + '\n\n' + msg;
+      }
       return fail(msg);
     }
     if (/Tunnel is up/.test(log)) return setState({ phase: 'connected', vpnId: id });
@@ -482,18 +582,19 @@ async function connect(id, typedPassword) {
     if (pendingCode) {
       const code = pendingCode;
       pendingCode = null;
-      setState({ phase: 'connecting', vpnId: id, message: 'Verificando o código...' });
+      setState({ phase: 'connecting', vpnId: id, message: L('Verificando o código...', 'Checking the code...') });
       await sendInput(code);
       deadline = Date.now() + 60000;
     }
-    if (Date.now() > deadline) return fail('Tempo esgotado.\n\n' + logTail(log));
+    if (Date.now() > deadline) return fail(L('Tempo esgotado.\n\n', 'Timed out.\n\n') + logTail(log));
   }
 }
 
 async function disconnect() {
   attempt++;
   pendingCode = null;
-  setState({ phase: 'connecting', message: 'Desconectando...' });
+  waitingConnect = null;
+  setState({ phase: 'connecting', message: L('Desconectando...', 'Disconnecting...') });
   await removeContainers();
   setState({ phase: 'idle' });
 }
@@ -513,6 +614,9 @@ ipcMain.handle('connect', (_e, id, password) => { connect(id, password); });
 ipcMain.handle('code', (_e, code) => { pendingCode = String(code).trim(); });
 ipcMain.handle('disconnect', () => disconnect());
 ipcMain.handle('dismiss', () => { setState({ phase: 'idle' }); refresh(); });
+ipcMain.handle('docker-open', () => openDocker());
+ipcMain.handle('docker-download', () => shell.openExternal(DOCKER_DOWNLOAD));
+ipcMain.handle('docker-cancel', () => { waitingConnect = null; refresh(); });
 
 ipcMain.handle('save', async (_e, data) => {
   const c = loadConfig();
@@ -534,7 +638,7 @@ ipcMain.handle('save', async (_e, data) => {
   try {
     await setCred(v.id, String(data.user || '').trim(), String(data.password || ''));
   } catch (e) {
-    return { id: v.id, error: 'A VPN foi salva, mas o usuário e a senha não foram gravados no cofre de senhas.\n' + e.message };
+    return { id: v.id, error: L('A VPN foi salva, mas o usuário e a senha não foram gravados no cofre de senhas.\n', 'The VPN was saved, but the user and password were not stored in the password vault.\n') + e.message };
   }
 
   const changed = before !== JSON.stringify(v.forward);
@@ -544,6 +648,25 @@ ipcMain.handle('save', async (_e, data) => {
 
 ipcMain.handle('hosts-status', () => hostsStatus());
 ipcMain.handle('hosts-apply', async () => ({ hostsOk: await syncHosts() }));
+
+ipcMain.handle('clipboard-text', () => clipboard.readText());
+
+ipcMain.handle('lang', () => lang);
+ipcMain.handle('set-lang', (_e, l) => {
+  if (l !== 'pt' && l !== 'en') return lang;
+  const c = loadConfig();
+  c.lang = lang = l;
+  saveConfig(c);
+  updateTray();
+  return lang;
+});
+
+// Opens a VPN site in the default browser. Only plain host[:port] values.
+ipcMain.handle('open-site', (_e, site) => {
+  const s = String(site || '').trim();
+  if (!/^[a-z0-9.-]+(:\d{1,5})?$/i.test(s)) return;
+  shell.openExternal('https://' + s);
+});
 
 ipcMain.handle('delete', async (_e, id) => {
   if (state.vpnId === id && state.phase !== 'idle') await disconnect();
@@ -558,7 +681,7 @@ ipcMain.handle('delete', async (_e, id) => {
 // onlyroute.env next to it, if there is one.
 ipcMain.handle('import', async () => {
   const pick = await dialog.showOpenDialog(win, {
-    title: 'Importar vpns.json',
+    title: L('Importar vpns.json', 'Import vpns.json'),
     filters: [{ name: 'vpns.json', extensions: ['json'] }],
     properties: ['openFile'],
   });
@@ -569,7 +692,7 @@ ipcMain.handle('import', async () => {
     list = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')).vpns;
     if (!Array.isArray(list)) throw new Error();
   } catch {
-    return { error: 'Esse arquivo não parece um vpns.json.' };
+    return { error: L('Esse arquivo não parece um vpns.json.', 'This file does not look like a vpns.json.') };
   }
   const env = {};
   try {
@@ -599,7 +722,7 @@ ipcMain.handle('import', async () => {
     const creds = await getCreds();
     for (const l of logins) creds.set(l.id, { user: l.user, pass: l.pass });
   } catch (e) {
-    return { added: logins.length, error: 'Os usuários e senhas não foram gravados no cofre de senhas.\n' + e.message };
+    return { added: logins.length, error: L('Os usuários e senhas não foram gravados no cofre de senhas.\n', 'The users and passwords were not stored in the password vault.\n') + e.message };
   }
   return { added: logins.length };
 });
@@ -625,6 +748,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => { quitting = true; });
 
   app.whenReady().then(() => {
+    pickLang();
     win = new BrowserWindow({
       width: 600,
       height: 740,
@@ -653,15 +777,19 @@ if (!app.requestSingleInstanceLock()) {
       win.hide();
       if (!hintShown) {
         hintShown = true;
-        tray.displayBalloon({ title: 'O OnlyRoute continua aqui', content: 'Ele fica na bandeja, perto do relógio. Para fechar de vez: botão direito > Sair.' });
+        tray.displayBalloon({ title: L('O OnlyRoute continua aqui', 'OnlyRoute is still running'), content: L('Ele fica na bandeja, perto do relógio. Para fechar de vez: botão direito > Sair.', 'It stays in the tray, next to the clock. To close it for good: right-click > Quit.') });
       }
     });
 
     tray = new Tray(trayIcon('off'));
     tray.on('click', showWindow);
     updateTray();
-    refresh();
-    setInterval(refresh, 10000);
+    // Checks every 10 s, or every 2 s while waiting for Docker to open.
+    const tick = async () => {
+      try { await refresh(); } catch {}
+      setTimeout(tick, state.phase === 'nodocker' ? 2000 : 10000);
+    };
+    tick();
   });
 
   // "Sair" closes the app. The VPN keeps running in Docker until "Desconectar".

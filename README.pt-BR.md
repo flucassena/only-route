@@ -40,10 +40,13 @@ Funciona com qualquer programa (git, navegador, IDE, cliente de API) sem configu
 - Cadastre quantas VPNs quiser (empresa, clientes, laboratório) e troque entre elas com um clique.
 - Dois cliques num cartão abrem a edição.
 - O app fica na bandeja: o ícone fica verde com a VPN ligada e avisa se ela cair.
+- Cole o código de verificação com um clique, e clique num site para abrir no navegador.
+- Em português ou inglês: segue o idioma do sistema, e o botão no rodapé troca.
 
 **Só terminal, se preferir**
 - `onlyroute.ps1` (Windows) e `onlyroute.sh` (macOS e Linux) fazem tudo o que o app faz, com os mesmos comandos.
 - O app e o terminal usam a mesma conexão: dá para ligar num e desligar no outro.
+- Os scripts também falam português ou inglês (pelo idioma do sistema, ou `ONLYROUTE_LANG=pt` / `en`).
 
 ![O código de verificação pedido dentro do cartão da VPN](.github/assets/code.png)
 
@@ -51,7 +54,7 @@ Funciona com qualquer programa (git, navegador, IDE, cliente de API) sem configu
 
 **Requisitos**
 - Windows 10 ou 11, macOS 12 ou mais novo, ou Linux x64.
-- **Docker** instalado e rodando:
+- **Docker** instalado (o OnlyRoute abre ele quando precisar):
   - Windows e macOS: [Docker Desktop](https://www.docker.com/products/docker-desktop/).
   - Linux: Docker Engine, com o seu usuário no grupo `docker` e o módulo PPP carregado:
 
@@ -112,7 +115,7 @@ Get-FileHash .\OnlyRoute-<versão>-win-x64.exe -Algorithm SHA256   # Windows
 
 ## Primeiros passos
 
-1. **Abra o Docker** e espere ele terminar de iniciar.
+1. **Tenha o Docker instalado.** Não precisa abrir antes: se ele estiver fechado, o OnlyRoute abre, espera ficar pronto e continua sozinho.
 2. **Adicione uma VPN.** Clique em **+ Adicionar VPN** e preencha o gateway e a porta (os mesmos do FortiClient), o seu usuário e, se quiser, a senha.
 3. **Escolha os sites.** Em **Sites que passam pela VPN**, adicione cada site que só abre pela VPN.
 4. **Conecte.** Clique em **Conectar** e digite o código de verificação quando ele for pedido. Na primeira vez, o OnlyRoute monta a imagem Docker, o que leva cerca de um minuto.
@@ -195,7 +198,8 @@ Se o PowerShell bloquear scripts, use `powershell -ExecutionPolicy Bypass -File 
 - A conexão com a empresa usa o mesmo protocolo do FortiClient (TLS), com o mesmo login e o mesmo 2FA.
 - A senha vai do cofre direto para o openfortivpn por um canal interno do container. Ela não é gravada em arquivo nem aparece na linha de comando.
 - Os repasses escutam só em endereços locais (`127.0.0.x`). Outras máquinas da rede não conseguem usá-los.
-- O container recebe as permissões `NET_ADMIN` e `SYS_ADMIN` e o dispositivo `/dev/ppp`, que o `pppd` precisa para montar o túnel. Elas valem só dentro do container, não no seu sistema.
+- O container da VPN recebe só a permissão `NET_ADMIN` e o dispositivo `/dev/ppp`, que o `pppd` precisa para montar o túnel.
+- Em alguns Docker (WSL 2 recente), o suporte a PPP vem desligado no Linux do Docker. Antes de conectar, o OnlyRoute confere isso e, se precisar, liga com um container privilegiado que roda só o `modprobe ppp_async` e termina.
 - O `trustedCert` fixa um certificado exato: o openfortivpn só aceita aquele certificado.
 - O OnlyRoute não faz as verificações de conformidade do FortiClient (antivírus, atualizações). Confirme com a TI se esse uso é permitido na sua empresa.
 

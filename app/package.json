@@ -1,0 +1,77 @@
+{
+  "name": "onlyroute",
+  "productName": "OnlyRoute",
+  "version": "1.0.0",
+  "description": "Conecta numa VPN FortiGate SSL e passa por ela só os sites que você escolher",
+  "main": "main.js",
+  "private": true,
+  "license": "CC0-1.0",
+  "author": "flucassena",
+  "homepage": "https://github.com/flucassena/only-route",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flucassena/only-route.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "icon": "node build/make-icon.js",
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:linux": "electron-builder --linux --publish never"
+  },
+  "build": {
+    "appId": "io.github.flucassena.onlyroute",
+    "productName": "OnlyRoute",
+    "artifactName": "OnlyRoute-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "vault.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "build/icon.png",
+      "build/tray-on.png",
+      "build/tray-off.png",
+      "build/tray-busy.png"
+    ],
+    "extraResources": [
+      { "from": "../Dockerfile", "to": "docker/Dockerfile" },
+      { "from": "../entrypoint.sh", "to": "docker/entrypoint.sh" }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "OnlyRoute"
+    },
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "icon": "build/icon.png",
+      "category": "public.app-category.utilities",
+      "identity": null
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png",
+      "category": "Network",
+      "maintainer": "flucassena <flucassena@users.noreply.github.com>",
+      "synopsis": "VPN FortiGate só para os sites que você escolher"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0"
+  }
+}

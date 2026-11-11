@@ -1,0 +1,12 @@
+{
+  "vpns": [
+    {
+      "id": "empresa",
+      "name": "Empresa - Sede",
+      "gateway": "vpn.empresa.com.br",
+      "port": 10443,
+      "credentials": "EMPRESA",
+      "forward": ["gitlab.empresa.com.br"]
+    }
+  ]
+}

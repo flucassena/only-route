@@ -1,0 +1,10 @@
+# Personal settings: your VPNs and logins never go to the repository.
+vpns.json
+onlyroute.env
+vpn-git.env
+
+# App build
+app/node_modules/
+app/dist/
+
+*.zip

@@ -1,0 +1,4 @@
+# Shell scripts must keep Unix line endings to run on macOS, Linux and in Docker.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf

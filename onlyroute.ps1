@@ -436,7 +436,8 @@ switch ($Command) {
 
     # Sem --rm: se a conexao falhar, ainda da para ler as mensagens de erro.
     $runArgs = @('run', '-d', '--name', $Name, '--label', "$Label=$($v.id)",
-      '--cap-add', 'NET_ADMIN', '--device', '/dev/ppp') + $portArgs + @(
+      # SYS_ADMIN: em alguns kernels do Docker/WSL o pppd precisa dela ("Couldn't set tty to PPP discipline").
+      '--cap-add', 'NET_ADMIN', '--cap-add', 'SYS_ADMIN', '--device', '/dev/ppp') + $portArgs + @(
       '-e', "VPN_HOST=$($v.gateway)", '-e', "VPN_PORT=$($v.port)", '-e', "VPN_USER=$user",
       '-e', "FORWARDS=$($forwards -join ' ')", '-e', "TRUSTED_CERT=$($v.trustedCert)",
       '-e', 'DETACHED=1', $Image)

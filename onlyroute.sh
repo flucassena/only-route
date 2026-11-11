@@ -601,8 +601,10 @@ Alternativa: onlyroute.env (veja onlyroute.env.example)."
     fwd_env="${forwards[*]+${forwards[*]}}"
 
     # No --rm: if the connection fails, the error messages can still be read.
+    # SYS_ADMIN: on some Docker kernels pppd needs it to turn on the PPP line
+    # discipline ("Couldn't set tty to PPP discipline").
     if ! docker run -d --name "$NAME" --label "$LABEL=${V_ID[v]}" \
-      --cap-add NET_ADMIN --device /dev/ppp ${port_args[@]+"${port_args[@]}"} \
+      --cap-add NET_ADMIN --cap-add SYS_ADMIN --device /dev/ppp ${port_args[@]+"${port_args[@]}"} \
       -e "VPN_HOST=${V_GW[v]}" -e "VPN_PORT=${V_PORT[v]}" -e "VPN_USER=$user" \
       -e "FORWARDS=$fwd_env" -e "TRUSTED_CERT=${V_CERT[v]}" \
       -e DETACHED=1 "$IMAGE" >/dev/null; then

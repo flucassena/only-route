@@ -197,6 +197,7 @@ If PowerShell blocks scripts, use `powershell -ExecutionPolicy Bypass -File .\on
 - The connection to the company uses the same protocol as FortiClient (TLS), with the same login and the same 2FA.
 - The password goes from the vault straight to openfortivpn through a channel inside the container. It's never written to a file and never appears on a command line.
 - The relays listen only on local addresses (`127.0.0.x`). Other machines on the network can't use them.
+- The container gets the `NET_ADMIN` and `SYS_ADMIN` capabilities and the `/dev/ppp` device, which `pppd` needs to build the tunnel. They apply inside the container only, not to your system.
 - `trustedCert` pins one exact certificate: openfortivpn accepts only that certificate.
 - OnlyRoute doesn't run FortiClient's compliance checks (antivirus, updates). Check with your IT team that this use is allowed at your company.
 

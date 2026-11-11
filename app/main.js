@@ -442,7 +442,9 @@ async function connect(id, typedPassword) {
   }
   const r = await docker([
     'run', '-d', '--name', NAME, '--label', `${LABEL}=${v.id}`,
-    '--cap-add', 'NET_ADMIN', '--device', '/dev/ppp', ...portArgs,
+    // SYS_ADMIN: on some Docker/WSL kernels pppd needs it to turn on the PPP
+    // line discipline ("Couldn't set tty to PPP discipline").
+    '--cap-add', 'NET_ADMIN', '--cap-add', 'SYS_ADMIN', '--device', '/dev/ppp', ...portArgs,
     '-e', `VPN_HOST=${v.gateway}`, '-e', `VPN_PORT=${v.port || 10443}`, '-e', `VPN_USER=${user}`,
     '-e', `FORWARDS=${forwards.join(' ')}`, '-e', `TRUSTED_CERT=${v.trustedCert || ''}`,
     '-e', 'DETACHED=1', IMAGE,
@@ -608,6 +610,12 @@ ipcMain.handle('hosts-remove', async () => {
 });
 
 // ---------------------------------------------------------------- window
+
+// Windows names notifications after this id. It must match the appId in
+// package.json, which the installer gives to the Start menu shortcut. Only
+// set it in the installed app: when running with `npm start` the id has no
+// shortcut and Windows would show the raw id instead of a name.
+if (process.platform === 'win32' && app.isPackaged) app.setAppUserModelId('io.github.flucassena.onlyroute');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

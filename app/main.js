@@ -1,7 +1,8 @@
 // OnlyRoute: the same thing as onlyroute.ps1, with windows instead of a terminal.
 // It uses the same Docker image, container name, hosts marker and vault entries,
 // so the app and the script see each other's connection.
-const { app, BrowserWindow, ipcMain, safeStorage, dialog, Tray, Menu, nativeImage, shell, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, dialog, Tray, Menu, nativeImage, shell, clipboard, net } = require('electron');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -481,10 +482,12 @@ async function connect(id, typedPassword) {
   try { cred = (await getCreds()).get(id) || {}; } catch {}
   const user = cred.user || '';
   const password = typedPassword || cred.pass || '';
-  const fail = async (message) => {
+  // message: what went wrong, in plain words; hint: what to do; log: the full
+  // output, shown only when the user asks for it.
+  const fail = async (message, hint = '', log = '') => {
     if (!live()) return;
     await removeContainers();
-    setState({ phase: 'error', vpnId: id, message });
+    setState({ phase: 'error', vpnId: id, message, hint, log: String(log || '').trim() });
   };
 
   setState({ phase: 'connecting', vpnId: id, message: L('Preparando...', 'Getting ready...') });
@@ -504,12 +507,13 @@ async function connect(id, typedPassword) {
     if (win && !win.isVisible()) showWindow();
   }
   if (!(await syncHosts())) {
-    return fail(IS_WIN
-      ? L('O arquivo hosts não foi atualizado. Clique em "Sim" no pedido de permissão do Windows.', 'The hosts file was not updated. Click "Yes" on the Windows permission prompt.')
-      : L('O arquivo /etc/hosts não foi atualizado. Digite a senha de administrador quando o sistema pedir.', '/etc/hosts was not updated. Type the administrator password when the system asks.'));
+    return fail(L('O arquivo hosts não foi atualizado.', 'The hosts file was not updated.'), IS_WIN
+      ? L('Tente de novo e clique em "Sim" no pedido de permissão do Windows.', 'Try again and click "Yes" on the Windows permission prompt.')
+      : L('Tente de novo e digite a senha de administrador quando o sistema pedir.', 'Try again and type the administrator password when the system asks.'));
   }
   if (!(await ensureAliases())) {
-    return fail(L('Não consegui criar os endereços locais (127.0.0.x). Digite a senha de administrador quando o sistema pedir.', 'Could not create the local addresses (127.0.0.x). Type the administrator password when the system asks.'));
+    return fail(L('Não consegui criar os endereços locais (127.0.0.x).', 'Could not create the local addresses (127.0.0.x).'),
+      L('Tente de novo e digite a senha de administrador quando o sistema pedir.', 'Try again and type the administrator password when the system asks.'));
   }
   if (!live()) return;
 
@@ -517,7 +521,11 @@ async function connect(id, typedPassword) {
       && (await docker(['tag', LEGACY.image, IMAGE])).code !== 0) { // reuses the old image if there is one
     setState({ phase: 'building', vpnId: id, message: L('Primeira vez: montando a imagem (cerca de 1 minuto)...', 'First time: building the image (about 1 minute)...') });
     const b = await docker(['build', '-t', IMAGE, DOCKER_DIR]);
-    if (b.code !== 0) return fail(L('Falha ao montar a imagem Docker:\n', 'Could not build the Docker image:\n') + logTail(b.stderr || b.stdout));
+    if (b.code !== 0) {
+      return fail(L('Não consegui montar a imagem do Docker.', 'Could not build the Docker image.'),
+        L('Confira se a internet está funcionando e tente de novo. O log completo mostra o motivo.', 'Check that the internet is working and try again. The full log shows why.'),
+        b.stderr || b.stdout);
+    }
     if (!live()) return;
   }
 
@@ -544,11 +552,21 @@ async function connect(id, typedPassword) {
     '-e', 'DETACHED=1', IMAGE,
   ]);
   if (r.code !== 0) {
-    let msg = logTail(r.stderr);
-    if (/port is already allocated|bind/i.test(r.stderr)) msg = L('Uma porta local já está em uso (outro programa, ou o FortiClient?).\n', 'A local port is already in use (another program, or FortiClient?).\n') + msg;
-    else if (/\/dev\/ppp/.test(r.stderr)) msg = L('Falta o /dev/ppp. No Linux, rode: sudo modprobe ppp_generic\n', '/dev/ppp is missing. On Linux, run: sudo modprobe ppp_generic\n') + msg;
-    else if (/permission denied/i.test(r.stderr)) msg = L('Seu usuário não tem permissão no Docker. No Linux: sudo usermod -aG docker $USER e entre de novo na sessão.\n', 'Your user has no permission on Docker. On Linux: sudo usermod -aG docker $USER and log in again.\n') + msg;
-    return fail(msg);
+    const e = r.stderr;
+    if (/port is already allocated|bind/i.test(e)) {
+      return fail(L('Uma porta que a VPN usa já está ocupada.', 'A port the VPN needs is already taken.'),
+        L('Outro programa (o FortiClient, por exemplo) está usando. Feche-o e tente de novo.', 'Another program (FortiClient, for example) is using it. Close it and try again.'), e);
+    }
+    if (/\/dev\/ppp/.test(e)) {
+      return fail(L('Falta o /dev/ppp no sistema.', '/dev/ppp is missing on this system.'),
+        L('No Linux, rode: sudo modprobe ppp_generic e tente de novo.', 'On Linux, run: sudo modprobe ppp_generic and try again.'), e);
+    }
+    if (/permission denied/i.test(e)) {
+      return fail(L('Seu usuário não tem permissão no Docker.', 'Your user has no permission on Docker.'),
+        L('No Linux: sudo usermod -aG docker $USER e entre de novo na sessão.', 'On Linux: sudo usermod -aG docker $USER and log in again.'), e);
+    }
+    return fail(L('O Docker não conseguiu iniciar a VPN.', 'Docker could not start the VPN.'),
+      L('Tente de novo. Se continuar, reinicie o Docker Desktop.', 'Try again. If it keeps happening, restart Docker Desktop.'), e);
   }
 
   await sleep(800);
@@ -563,15 +581,30 @@ async function connect(id, typedPassword) {
     const info = await containerInfo();
     const log = await readLog();
     if (!info || !info.running) {
-      let msg = logTail(log) || L('A VPN parou sem mensagem.', 'The VPN stopped with no message.');
-      if (/Could not authenticate|Permission denied|authentication failed/i.test(log)) msg = L('Usuário, senha ou código errado.\n\n', 'Wrong user, password or code.\n\n') + msg;
-      else if (/pppd: An immediately fatal error/i.test(log)) {
-        msg = (pppOk
-          ? L('O login funcionou, mas o Docker não deixou montar o túnel. Feche e abra o Docker Desktop e tente de novo.', 'The login worked, but Docker did not let the tunnel start. Close and reopen Docker Desktop and try again.')
-          : L('O login funcionou, mas o Linux do Docker não tem suporte a PPP ligado. No PowerShell, rode "wsl --update", reinicie o Docker Desktop e tente de novo.', 'The login worked, but Docker\'s Linux has no PPP support turned on. In PowerShell, run "wsl --update", restart Docker Desktop and try again.'))
-          + '\n\n' + msg;
+      // The gateway only asks for the code after the password is accepted, so a
+      // refusal after that is the code (wrong, expired or an old one pasted).
+      if (/Could not authenticate|Permission denied|authentication failed/i.test(log)) {
+        return askedCode
+          ? fail(L('O código de verificação foi recusado.', 'The verification code was refused.'),
+            L('A senha está certa; o código estava errado ou já tinha vencido (eles duram cerca de 1 minuto). Clique em "Tentar de novo" e use um código novo.',
+              'The password is right; the code was wrong or had already expired (they last about 1 minute). Click "Try again" and use a new code.'), log)
+          : fail(L('Usuário ou senha errados.', 'Wrong user or password.'),
+            L('Clique no lápis da VPN, confira o usuário e a senha (os mesmos do FortiClient) e tente de novo.', 'Click the pencil on the VPN, check the user and password (the same as in FortiClient) and try again.'), log);
       }
-      return fail(msg);
+      if (/pppd: An immediately fatal error/i.test(log)) {
+        return fail(L('O login funcionou, mas o túnel não abriu.', 'The login worked, but the tunnel did not open.'), pppOk
+          ? L('O Docker não deixou montar o túnel. Feche e abra o Docker Desktop e tente de novo.', 'Docker did not let the tunnel start. Close and reopen Docker Desktop and try again.')
+          : L('O Linux do Docker não tem suporte a PPP ligado. No PowerShell, rode "wsl --update", reinicie o Docker Desktop e tente de novo.', 'Docker\'s Linux has no PPP support turned on. In PowerShell, run "wsl --update", restart Docker Desktop and try again.'), log);
+      }
+      if (/Could not resolve|Name or service not known|Connection refused|timed out|Network is unreachable/i.test(log)) {
+        return fail(L('Não consegui falar com o servidor da VPN.', 'Could not reach the VPN server.'),
+          L('Confira a internet e o endereço e a porta do gateway (os mesmos do FortiClient).', 'Check the internet and the gateway address and port (the same as in FortiClient).'), log);
+      }
+      if (/certificate/i.test(log)) {
+        return fail(L('O certificado do servidor da VPN não foi aceito.', 'The VPN server certificate was not accepted.'),
+          L('Se a TI confirmar que o servidor é esse mesmo, copie o valor do log para "Avançado > Certificado confiável" da VPN.', 'If your IT team confirms it is the right server, copy the value from the log into the VPN\'s "Advanced > Trusted certificate".'), log);
+      }
+      return fail(L('A VPN parou.', 'The VPN stopped.'), L('O log completo mostra o motivo.', 'The full log shows why.'), log);
     }
     if (/Tunnel is up/.test(log)) return setState({ phase: 'connected', vpnId: id });
     if (!askedCode && /Two-factor authentication token/i.test(log)) {
@@ -586,7 +619,10 @@ async function connect(id, typedPassword) {
       await sendInput(code);
       deadline = Date.now() + 60000;
     }
-    if (Date.now() > deadline) return fail(L('Tempo esgotado.\n\n', 'Timed out.\n\n') + logTail(log));
+    if (Date.now() > deadline) {
+      return fail(L('Demorou demais e a conexão foi cancelada.', 'It took too long and the connection was cancelled.'),
+        askedCode ? L('O código não foi enviado a tempo. Tente de novo.', 'The code was not sent in time. Try again.') : L('Tente de novo.', 'Try again.'), log);
+    }
   }
 }
 
@@ -597,6 +633,127 @@ async function disconnect() {
   setState({ phase: 'connecting', message: L('Desconectando...', 'Disconnecting...') });
   await removeContainers();
   setState({ phase: 'idle' });
+}
+
+// ---------------------------------------------------------------- updates
+// Looks at the latest GitHub release. When it is newer, the window shows an
+// "Update" button; clicking it downloads the installer for this system, checks
+// it against the release's SHA256SUMS.txt and installs it (silently on Windows).
+
+const RELEASES = 'https://api.github.com/repos/flucassena/only-route/releases/latest';
+// update.phase: none | available | downloading | installing | error
+let update = { phase: 'none' };
+// Running from source (npm start) the version is not a real one, so it only
+// checks when ONLYROUTE_UPDATE_TEST=1 (and pretends to be that old version).
+const currentVersion = () => process.env.ONLYROUTE_UPDATE_FROM || app.getVersion();
+const updatesOn = () => app.isPackaged || process.env.ONLYROUTE_UPDATE_TEST === '1';
+
+function setUpdate(u) {
+  update = u;
+  if (win && !win.isDestroyed()) win.webContents.send('update', update);
+}
+
+function newer(a, b) { // is version a newer than b?
+  const pa = String(a).replace(/^v/, '').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).replace(/^v/, '').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+}
+
+// The installer that fits this system, by the names electron-builder gives them.
+function pickAsset(assets) {
+  const n = (re) => assets.find((a) => re.test(a.name));
+  if (IS_WIN) return n(/-win-x64\.exe$/i);
+  if (IS_MAC) return n(new RegExp(`-mac-${process.arch}\\.dmg$`, 'i'));
+  return process.env.APPIMAGE ? n(/\.AppImage$/i) : n(/\.deb$/i);
+}
+
+const ghFetch = (url) => net.fetch(url, { headers: { 'User-Agent': 'OnlyRoute', Accept: 'application/vnd.github+json' } });
+
+async function checkUpdate() {
+  if (!updatesOn() || ['downloading', 'installing'].includes(update.phase)) return;
+  try {
+    const r = await ghFetch(RELEASES);
+    if (!r.ok) return;
+    const rel = await r.json();
+    const version = String(rel.tag_name || '').replace(/^v/, '');
+    const asset = pickAsset(rel.assets || []);
+    const sums = (rel.assets || []).find((a) => a.name === 'SHA256SUMS.txt');
+    if (!version || !asset || !newer(version, currentVersion())) return setUpdate({ phase: 'none' });
+    setUpdate({ phase: 'available', version, name: asset.name, url: asset.browser_download_url, size: asset.size,
+      sums: sums && sums.browser_download_url, page: rel.html_url });
+  } catch {}
+}
+
+async function download(url, file, onProgress) {
+  const r = await ghFetch(url);
+  if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+  const total = +r.headers.get('content-length') || 0;
+  const out = fs.createWriteStream(file);
+  const hash = crypto.createHash('sha256');
+  let got = 0;
+  const reader = r.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const buf = Buffer.from(value);
+      hash.update(buf);
+      if (!out.write(buf)) await new Promise((res) => out.once('drain', res));
+      got += buf.length;
+      if (total) onProgress(got / total);
+    }
+  } finally {
+    await new Promise((res) => out.end(res));
+  }
+  return hash.digest('hex');
+}
+
+async function installUpdate() {
+  if (update.phase !== 'available' && update.phase !== 'error') return;
+  const u = update.url ? update : null;
+  if (!u) return;
+  const dir = path.join(os.tmpdir(), 'onlyroute-update');
+  const file = path.join(dir, u.name);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    let last = -1;
+    setUpdate({ ...u, phase: 'downloading', progress: 0 });
+    const sha = await download(u.url, file, (p) => {
+      const pct = Math.floor(p * 100);
+      if (pct !== last) { last = pct; setUpdate({ ...u, phase: 'downloading', progress: p }); }
+    });
+    // Only install a file that matches the release's checksum list.
+    if (u.sums) {
+      const list = await (await ghFetch(u.sums)).text();
+      const line = list.split(/\r?\n/).find((l) => l.trim().endsWith(u.name));
+      if (!line || line.trim().split(/\s+/)[0].toLowerCase() !== sha) throw new Error(L('o arquivo baixado não confere com o SHA256SUMS.txt', 'the downloaded file does not match SHA256SUMS.txt'));
+    }
+    setUpdate({ ...u, phase: 'installing' });
+    if (IS_WIN) {
+      // NSIS: /S installs silently over the current install; --force-run opens
+      // the app again when it is done. The app quits so its files can be replaced.
+      spawn(file, ['/S', '--force-run'], { detached: true, stdio: 'ignore' }).unref();
+      setTimeout(() => { quitting = true; app.quit(); }, 800);
+    } else if (IS_MAC) {
+      // Unsigned app: the user drags it to Applications from the disk image.
+      await shell.openPath(file);
+      setUpdate({ ...u, phase: 'manual' });
+    } else if (process.env.APPIMAGE) {
+      fs.copyFileSync(file, process.env.APPIMAGE);
+      fs.chmodSync(process.env.APPIMAGE, 0o755);
+      app.relaunch({ execPath: process.env.APPIMAGE });
+      quitting = true; app.quit();
+    } else {
+      const r = await runAsRoot(`apt-get install -y ${shq(file)} || dpkg -i ${shq(file)}`);
+      if (r.code !== 0) throw new Error(logTail(r.stderr || r.stdout) || 'apt-get');
+      app.relaunch();
+      quitting = true; app.quit();
+    }
+  } catch (e) {
+    try { fs.unlinkSync(file); } catch {}
+    setUpdate({ ...u, phase: 'error', message: String(e.message || e) });
+  }
 }
 
 // ---------------------------------------------------------------- IPC
@@ -650,6 +807,11 @@ ipcMain.handle('hosts-status', () => hostsStatus());
 ipcMain.handle('hosts-apply', async () => ({ hostsOk: await syncHosts() }));
 
 ipcMain.handle('clipboard-text', () => clipboard.readText());
+ipcMain.handle('clipboard-write', (_e, text) => clipboard.writeText(String(text || '')));
+
+ipcMain.handle('update-info', () => update);
+ipcMain.handle('update-go', () => { installUpdate(); });
+ipcMain.handle('update-page', () => update.page && shell.openExternal(update.page));
 
 ipcMain.handle('lang', () => lang);
 ipcMain.handle('set-lang', (_e, l) => {
@@ -790,6 +952,9 @@ if (!app.requestSingleInstanceLock()) {
       setTimeout(tick, state.phase === 'nodocker' ? 2000 : 10000);
     };
     tick();
+    // New version? Checks a few seconds after opening, then every 6 hours.
+    setTimeout(checkUpdate, 5000);
+    setInterval(checkUpdate, 6 * 3600 * 1000);
   });
 
   // "Sair" closes the app. The VPN keeps running in Docker until "Desconectar".

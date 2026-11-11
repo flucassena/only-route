@@ -18,7 +18,9 @@ let editPw = '';        // saved password, shown hidden in the form
 const EYE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 const PASTE = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>';
 const EYE_OFF = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.9 0 3.6-.6 5-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M2 2l20 20"/></svg>';
-const GLOBE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+const ALERT = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>';
+let logOpen = false; // keeps "Show full log" open across re-renders
+const GLOBE ='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
 
 // Password input with a button to show/hide what is typed.
 function pwField(id, value, placeholder) {
@@ -105,6 +107,30 @@ function renderChrome() {
   // Shows the language in use, highlighted; click the other one to switch.
   $('langBtn').innerHTML = `${GLOBE}<span class="seg ${lang === 'pt' ? 'on' : ''}" data-lang="pt">PT</span><span class="seg ${lang === 'en' ? 'on' : ''}" data-lang="en">EN</span>`;
   $('langBtn').title = L('Idioma: português', 'Language: English');
+  renderUpdate();
+}
+
+// The "Update" button next to the language switch: only shows when the latest
+// GitHub release is newer than this app.
+let upd = { phase: 'none' };
+const DOWNLOAD = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>';
+function renderUpdate() {
+  const b = $('updBtn');
+  b.classList.toggle('hidden', upd.phase === 'none');
+  b.disabled = upd.phase === 'downloading' || upd.phase === 'installing';
+  b.className = 'small upd' + (upd.phase === 'none' ? ' hidden' : '') + (upd.phase === 'error' ? ' bad' : '');
+  b.style.setProperty('--p', upd.phase === 'downloading' ? `${Math.round((upd.progress || 0) * 100)}%` : '0%');
+  const v = upd.version ? ` v${upd.version}` : '';
+  let text = '';
+  switch (upd.phase) {
+    case 'available': text = L(`Atualizar para${v}`, `Update to${v}`); break;
+    case 'downloading': text = L(`Baixando... ${Math.round((upd.progress || 0) * 100)}%`, `Downloading... ${Math.round((upd.progress || 0) * 100)}%`); break;
+    case 'installing': text = L('Instalando... o app reabre sozinho', 'Installing... the app reopens by itself'); break;
+    case 'manual': text = L('Abra o instalador baixado', 'Open the downloaded installer'); break;
+    case 'error': text = L('Falhou. Tentar de novo', 'Failed. Try again'); break;
+  }
+  b.innerHTML = `${DOWNLOAD}<span>${esc(text)}</span>`;
+  b.title = upd.phase === 'error' ? upd.message || '' : L(`Nova versão${v} disponível`, `New version${v} available`);
 }
 
 // ------------------------------------------------------------------ list
@@ -142,7 +168,19 @@ function panelFor(v) {
       return `<div class="panel"><div class="good">${L('Conectada', 'Connected')}</div>
         <div class="hint">${L('Os sites desta VPN já funcionam em qualquer programa. Pode fechar o app: a VPN continua ligada.', 'The sites of this VPN now work in any program. You can close the app: the VPN stays on.')}</div></div>`;
     case 'error':
-      return `<div class="panel"><pre class="err">${esc(st.message)}</pre><button data-act="dismiss">OK</button></div>`;
+      return `<div class="panel">
+        <div class="errbox">
+          <div class="err-title">${ALERT}<span>${esc(st.message)}</span></div>
+          ${st.hint ? `<div class="err-hint">${esc(st.hint)}</div>` : ''}
+        </div>
+        ${st.log ? `<details class="logbox" ${logOpen ? 'open' : ''}><summary>${L('Ver log completo', 'Show full log')}</summary>
+          <pre class="log">${esc(st.log)}</pre>
+          <button class="small" data-act="log-copy">${L('Copiar log', 'Copy log')}</button></details>` : ''}
+        <div class="row" style="margin-top:12px">
+          <button class="primary" data-act="retry" data-id="${esc(v.id)}">${L('Tentar de novo', 'Try again')}</button>
+          <button data-act="dismiss">${L('Fechar', 'Close')}</button>
+        </div>
+      </div>`;
   }
   return '';
 }
@@ -196,7 +234,7 @@ function renderList() {
       + (sites.length ? '' : `<span class="chip">${L('nenhum site', 'no sites')}</span>`);
     const btn = connected
       ? `<button data-act="disconnect">${L('Desconectar', 'Disconnect')}</button>`
-      : (mine && (BUSY.includes(st.phase) || st.phase === 'nodocker')) || askPw === v.id ? ''
+      : (mine && (BUSY.includes(st.phase) || st.phase === 'nodocker' || st.phase === 'error')) || askPw === v.id ? ''
       : `<button class="primary" data-act="connect" data-id="${esc(v.id)}" ${busy || askPw ? 'disabled' : ''}>${L('Conectar', 'Connect')}</button>`;
     html += `<div class="card ${mine && st.phase !== 'idle' ? 'active' : ''}" data-edit="${esc(v.id)}" title="${L('Dois cliques para editar', 'Double-click to edit')}">
       <div class="row">
@@ -407,7 +445,13 @@ const actions = {
   },
   cancel() { window.api.disconnect(); },
   disconnect() { window.api.disconnect(); },
-  dismiss() { window.api.dismiss(); },
+  dismiss() { logOpen = false; window.api.dismiss(); },
+  async retry(id) { logOpen = false; await window.api.dismiss(); startConnect(id); },
+  async 'log-copy'() {
+    await window.api.clipboardWrite(st.log || '');
+    const b = document.querySelector('[data-act="log-copy"]');
+    if (b) { b.textContent = L('Copiado', 'Copied'); setTimeout(() => { b.textContent = L('Copiar log', 'Copy log'); }, 1500); }
+  },
   'docker-open'() { window.api.dockerOpen(); },
   'docker-download'() { window.api.dockerDownload(); },
   'docker-cancel'() { window.api.dockerCancel(); },
@@ -461,6 +505,10 @@ document.addEventListener('click', (e) => {
   if (fn) fn(el.dataset.id);
 });
 
+document.addEventListener('toggle', (e) => {
+  if (e.target.classList && e.target.classList.contains('logbox')) logOpen = e.target.open;
+}, true);
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   if (e.target.id === 'code') actions['code-go']();
@@ -471,6 +519,12 @@ document.addEventListener('keydown', (e) => {
 $('addBtn').onclick = () => actions.add();
 $('importBtn').onclick = () => actions.import();
 $('hostsBtn').onclick = () => actions['hosts-remove']();
+$('updBtn').onclick = () => {
+  if (upd.phase === 'available' || upd.phase === 'error') window.api.updateGo();
+  else if (upd.phase === 'manual') window.api.updatePage();
+};
+window.api.onUpdate((u) => { upd = u; renderUpdate(); });
+
 $('langBtn').onclick = (e) => {
   const seg = e.target.closest('[data-lang]');
   actions.lang(seg ? seg.dataset.lang : lang === 'pt' ? 'en' : 'pt');
@@ -488,6 +542,7 @@ window.api.onState((s) => {
 
 (async () => {
   lang = await window.api.lang();
+  upd = await window.api.updateInfo();
   st = await window.api.state();
   await reload();
 })();

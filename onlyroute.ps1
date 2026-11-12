@@ -247,6 +247,10 @@ function Test-Ppp { [bool](docker run --rm --entrypoint cat $Image /proc/tty/ldi
 function Enable-Ppp {
   if (Test-Ppp) { return $true }
   docker run --rm --privileged --pid=host --entrypoint nsenter $Image -t 1 -m modprobe ppp_async 2>&1 | Out-Null
+  if (Test-Ppp) { return $true }
+  # Kernels novos do WSL (6.x) deixam os modulos onde so as distros do WSL enxergam;
+  # a distro docker-desktop usa o mesmo kernel do Docker, entao carrega por ela.
+  wsl.exe -d docker-desktop -u root modprobe ppp_async 2>&1 | Out-Null
   return (Test-Ppp)
 }
 
@@ -377,6 +381,16 @@ function Offer-Reconnect {
   } else {
     T "Vale na proxima vez que ligar (ou rode 'down' e 'up')." "It takes effect the next time you connect (or run 'down' and 'up')."
   }
+}
+
+# O gateway as vezes vem como endereco inteiro ("https://vpn.x.com:10443/remote/login").
+# O openfortivpn quer so o host, com a porta separada; a porta no endereco vale mais.
+function Split-Gateway($Gateway, $Port) {
+  $g = "$Gateway".Trim() -replace '^[a-zA-Z]+://', '' -replace '[/?#].*$', ''
+  $p = 10443
+  if ("$Port" -match '^\d+$') { $p = [int]$Port }
+  if ($g -match '^([^:]*):(\d{1,5})$') { $g = $Matches[1]; $p = [int]$Matches[2] }
+  @{ Host = $g; Port = $p }
 }
 
 # "host" ou "host:porta" (padrao 443)
@@ -544,6 +558,7 @@ switch ($Command) {
 
     # Portas: cada site vira 127.0.0.x:porta no Windows -> porta interna do container
     $ips = Get-HostIps
+    $gw = Split-Gateway $v.gateway $v.port
     $portArgs = @()
     $forwards = @()
     $internal = 20000
@@ -554,16 +569,21 @@ switch ($Command) {
       $internal++
     }
 
+    # Se o suporte a PPP nao ligou, o container recebe SYS_ADMIN: em outros
+    # kernels do Docker/WSL e isso que resolve o "Couldn't set tty to PPP discipline".
+    $sysAdmin = @()
+    if (-not $pppOk) { $sysAdmin = @('--cap-add', 'SYS_ADMIN') }
+
     # Sem --rm: se a conexao falhar, ainda da para ler as mensagens de erro.
     $runArgs = @('run', '-d', '--name', $Name, '--label', "$Label=$($v.id)",
-      '--cap-add', 'NET_ADMIN', '--device', '/dev/ppp') + $portArgs + @(
-      '-e', "VPN_HOST=$($v.gateway)", '-e', "VPN_PORT=$($v.port)", '-e', "VPN_USER=$user",
+      '--cap-add', 'NET_ADMIN') + $sysAdmin + @('--device', '/dev/ppp') + $portArgs + @(
+      '-e', "VPN_HOST=$($gw.Host)", '-e', "VPN_PORT=$($gw.Port)", '-e', "VPN_USER=$user",
       '-e', "FORWARDS=$($forwards -join ' ')", '-e', "TRUSTED_CERT=$($v.trustedCert)",
       '-e', 'DETACHED=1', $Image)
     docker @runArgs | Out-Null
     if ($LASTEXITCODE -ne 0) { throw (T 'Nao consegui iniciar o container da VPN (porta ocupada?).' 'Could not start the VPN container (port already in use?).') }
 
-    T "Conectando em $($v.name) ($($v.gateway):$($v.port)) como $user" "Connecting to $($v.name) ($($v.gateway):$($v.port)) as $user"
+    T "Conectando em $($v.name) ($($gw.Host):$($gw.Port)) como $user" "Connecting to $($v.name) ($($gw.Host):$($gw.Port)) as $user"
     if ($password) {
       Send-VpnInput $password
     } else {

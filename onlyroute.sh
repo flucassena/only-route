@@ -416,9 +416,14 @@ then log out and back in (or run: newgrp docker).")" ;;
 # discipline"), so it's loaded from a short-lived privileged container. It
 # lasts until Docker restarts.
 has_ppp_ldisc() { docker run --rm --entrypoint cat "$IMAGE" /proc/tty/ldiscs 2>/dev/null | grep -q '^ppp[[:space:]]'; }
+# If it still isn't on, the VPN container gets SYS_ADMIN instead: on other
+# Docker/WSL kernels that is what fixes the same error.
+CAP_SYS_ADMIN=()
 ensure_ppp_ldisc() {
+  CAP_SYS_ADMIN=()
   has_ppp_ldisc && return 0
   docker run --rm --privileged --pid=host --entrypoint nsenter "$IMAGE" -t 1 -m modprobe ppp_async >/dev/null 2>&1 || true
+  has_ppp_ldisc || CAP_SYS_ADMIN=(--cap-add SYS_ADMIN)
 }
 
 build_image() { docker build -q -t "$IMAGE" "$SCRIPT_DIR" >/dev/null || die "$(t 'Falha ao montar a imagem Docker.' 'Failed to build the Docker image.')"; }
@@ -679,6 +684,15 @@ Alternative: onlyroute.env (see onlyroute.env.example).")"
     [ -n "$user" ] || die "$(t 'Usuário vazio.' 'Empty user.')"
     password=$L_PASS
 
+    # The gateway sometimes comes as a full address ("https://vpn.x.com:10443/remote/login").
+    # openfortivpn wants only the host, with the port apart; a port in the address wins.
+    gw_host=$(printf '%s' "${V_GW[v]}" | tr -d '[:space:]' | sed -E 's#^[a-zA-Z]+://##; s#[/?#].*$##')
+    gw_port=${V_PORT[v]}
+    case $gw_port in '' | *[!0-9]*) gw_port=10443 ;; esac
+    if [[ $gw_host =~ ^([^:]*):([0-9]{1,5})$ ]]; then
+      gw_host=${BASH_REMATCH[1]} gw_port=${BASH_REMATCH[2]}
+    fi
+
     # Ports: each site becomes 127.0.0.x:port on this computer -> container port.
     port_args=()
     forwards=()
@@ -693,15 +707,15 @@ Alternative: onlyroute.env (see onlyroute.env.example).")"
 
     # No --rm: if the connection fails, the error messages can still be read.
     if ! docker run -d --name "$NAME" --label "$LABEL=${V_ID[v]}" \
-      --cap-add NET_ADMIN --device /dev/ppp ${port_args[@]+"${port_args[@]}"} \
-      -e "VPN_HOST=${V_GW[v]}" -e "VPN_PORT=${V_PORT[v]}" -e "VPN_USER=$user" \
+      --cap-add NET_ADMIN ${CAP_SYS_ADMIN[@]+"${CAP_SYS_ADMIN[@]}"} --device /dev/ppp ${port_args[@]+"${port_args[@]}"} \
+      -e "VPN_HOST=$gw_host" -e "VPN_PORT=$gw_port" -e "VPN_USER=$user" \
       -e "FORWARDS=$fwd_env" -e "TRUSTED_CERT=${V_CERT[v]}" \
       -e DETACHED=1 "$IMAGE" >/dev/null; then
       remove_container
       die "$(t 'Não consegui iniciar o container da VPN (porta ocupada?).' 'Could not start the VPN container (port in use?).')"
     fi
 
-    echo "$(t "Conectando em ${V_NAME[v]} (${V_GW[v]}:${V_PORT[v]}) como $user" "Connecting to ${V_NAME[v]} (${V_GW[v]}:${V_PORT[v]}) as $user")"
+    echo "$(t "Conectando em ${V_NAME[v]} ($gw_host:$gw_port) como $user" "Connecting to ${V_NAME[v]} ($gw_host:$gw_port) as $user")"
     if [ -z "$password" ]; then
       read -rs -p "$(t 'Senha da VPN: ' 'VPN password: ')" password || password=
       echo >&2

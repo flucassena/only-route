@@ -200,8 +200,8 @@ If PowerShell blocks scripts, use `powershell -ExecutionPolicy Bypass -File .\on
 - The connection to the company uses the same protocol as FortiClient (TLS), with the same login and the same 2FA.
 - The password goes from the vault straight to openfortivpn through a channel inside the container. It's never written to a file and never appears on a command line.
 - The relays listen only on local addresses (`127.0.0.x`). Other machines on the network can't use them.
-- The VPN container gets only the `NET_ADMIN` capability and the `/dev/ppp` device, which `pppd` needs to build the tunnel.
-- On some Docker setups (recent WSL 2), PPP support is off in Docker's Linux kernel. Before connecting, OnlyRoute checks it and, if needed, turns it on with a privileged container that only runs `modprobe ppp_async` and exits.
+- The VPN container gets the `NET_ADMIN` capability and the `/dev/ppp` device, which `pppd` needs to build the tunnel.
+- On some Docker setups (recent WSL 2), PPP support is off in Docker's Linux kernel. Before connecting, OnlyRoute checks it and, if needed, turns it on with a privileged container that only runs `modprobe ppp_async` and exits. If that doesn't work, the VPN container also gets the `SYS_ADMIN` capability, which fixes the same problem on other kernels. It applies inside the container only.
 - `trustedCert` pins one exact certificate: openfortivpn accepts only that certificate.
 - OnlyRoute doesn't run FortiClient's compliance checks (antivirus, updates). Check with your IT team that this use is allowed at your company.
 

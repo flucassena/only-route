@@ -109,12 +109,24 @@ async function startDocker() {
 // a container can't load ("Couldn't set tty to PPP discipline: Operation not
 // permitted"), so it's loaded once from a short-lived privileged container.
 // It lasts until Docker restarts, so this runs before every connection.
+// If loading fails, the VPN container gets SYS_ADMIN instead (it fixes the same
+// error on other Docker/WSL kernels), and pppNote goes into the error log.
+let pppNote = '';
 async function ensurePpp() {
+  pppNote = '';
   const hasPpp = async () => /^ppp\s/m.test((await docker(['run', '--rm', '--entrypoint', 'cat', IMAGE, '/proc/tty/ldiscs'])).stdout);
   if (await hasPpp()) return true;
-  await docker(['run', '--rm', '--privileged', '--pid=host', '--entrypoint', 'nsenter', IMAGE,
-    '-t', '1', '-m', 'modprobe', 'ppp_async']);
-  return hasPpp();
+  const r = await docker(['run', '--rm', '--privileged', '--pid=host', '--entrypoint', 'nsenter', IMAGE,
+    '-t', '1', '-m', 'sh', '-c', 'uname -r; modprobe ppp_async']);
+  if (await hasPpp()) return true;
+  // Newer WSL kernels (6.x) keep their modules where only WSL's own distros see
+  // them; the docker-desktop distro shares Docker's kernel, so load it there.
+  if (process.platform === 'win32') {
+    await run('wsl.exe', ['-d', 'docker-desktop', '-u', 'root', 'modprobe', 'ppp_async']);
+    if (await hasPpp()) return true;
+  }
+  pppNote = `[modprobe ppp_async] ${String((r.stdout || '') + (r.stderr || '')).trim() || 'exit ' + r.code}`;
+  return false;
 }
 
 // ---------------------------------------------------------------- config
@@ -219,6 +231,16 @@ function normalizeSite(s) {
   } catch {
     return '';
   }
+}
+
+// The gateway field sometimes gets a full address ("https://vpn.x.com:10443/remote/login").
+// openfortivpn wants only the host, with the port apart; a port in the address wins.
+function splitGateway(gateway, port) {
+  let g = String(gateway || '').trim(), p = parseInt(port, 10) || 10443;
+  g = g.replace(/^[a-z]+:\/\//i, '').replace(/[/?#].*$/, '');
+  const m = /^(.*):(\d{1,5})$/.exec(g);
+  if (m && !m[1].includes(':')) { g = m[1]; p = +m[2]; }
+  return { gateway: g, port: p };
 }
 
 function parseForward(f) {
@@ -535,6 +557,7 @@ async function connect(id, typedPassword) {
 
   setState({ phase: 'connecting', vpnId: id, message: L('Conectando...', 'Connecting...') });
   const ips = hostIps(c);
+  const gw = splitGateway(v.gateway, v.port);
   const portArgs = [];
   const forwards = [];
   let internal = 20000;
@@ -546,8 +569,8 @@ async function connect(id, typedPassword) {
   }
   const r = await docker([
     'run', '-d', '--name', NAME, '--label', `${LABEL}=${v.id}`,
-    '--cap-add', 'NET_ADMIN', '--device', '/dev/ppp', ...portArgs,
-    '-e', `VPN_HOST=${v.gateway}`, '-e', `VPN_PORT=${v.port || 10443}`, '-e', `VPN_USER=${user}`,
+    '--cap-add', 'NET_ADMIN', ...(pppOk ? [] : ['--cap-add', 'SYS_ADMIN']), '--device', '/dev/ppp', ...portArgs,
+    '-e', `VPN_HOST=${gw.gateway}`, '-e', `VPN_PORT=${gw.port}`, '-e', `VPN_USER=${user}`,
     '-e', `FORWARDS=${forwards.join(' ')}`, '-e', `TRUSTED_CERT=${v.trustedCert || ''}`,
     '-e', 'DETACHED=1', IMAGE,
   ]);
@@ -594,7 +617,8 @@ async function connect(id, typedPassword) {
       if (/pppd: An immediately fatal error/i.test(log)) {
         return fail(L('O login funcionou, mas o túnel não abriu.', 'The login worked, but the tunnel did not open.'), pppOk
           ? L('O Docker não deixou montar o túnel. Feche e abra o Docker Desktop e tente de novo.', 'Docker did not let the tunnel start. Close and reopen Docker Desktop and try again.')
-          : L('O Linux do Docker não tem suporte a PPP ligado. No PowerShell, rode "wsl --update", reinicie o Docker Desktop e tente de novo.', 'Docker\'s Linux has no PPP support turned on. In PowerShell, run "wsl --update", restart Docker Desktop and try again.'), log);
+          : L('O Linux do Docker não tem suporte a PPP ligado. Feche e abra o Docker Desktop e tente de novo. Se continuar, copie o log e mande para quem cuida do OnlyRoute.', 'Docker\'s Linux has no PPP support turned on. Close and reopen Docker Desktop and try again. If it keeps happening, copy the log and send it to whoever looks after OnlyRoute.'),
+          pppNote ? `${log}\n\n${pppNote}` : log);
       }
       if (/Could not resolve|Name or service not known|Connection refused|timed out|Network is unreachable/i.test(log)) {
         return fail(L('Não consegui falar com o servidor da VPN.', 'Could not reach the VPN server.'),
@@ -786,8 +810,7 @@ ipcMain.handle('save', async (_e, data) => {
     c.vpns.push(v);
   }
   v.name = String(data.name || '').trim() || v.id;
-  v.gateway = String(data.gateway || '').trim();
-  v.port = parseInt(data.port, 10) || 10443;
+  Object.assign(v, splitGateway(data.gateway, data.port));
   v.trustedCert = String(data.trustedCert || '').trim().toLowerCase().replace(/[^0-9a-f]/g, '');
   if (!v.trustedCert) delete v.trustedCert;
   v.forward = [...new Set((data.forward || []).map(normalizeSite).filter(Boolean))];
@@ -871,7 +894,7 @@ ipcMain.handle('import', async () => {
     if (!x || !x.id || c.vpns.some((v) => v.id === x.id)) continue;
     const prefix = String(x.credentials || x.id).toUpperCase();
     const v = {
-      id: String(x.id), name: x.name || x.id, gateway: x.gateway, port: x.port || 10443,
+      id: String(x.id), name: x.name || x.id, ...splitGateway(x.gateway, x.port),
       forward: [...new Set((x.forward || []).map(normalizeSite).filter(Boolean))],
     };
     if (x.trustedCert) v.trustedCert = x.trustedCert;

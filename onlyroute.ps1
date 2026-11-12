@@ -248,9 +248,12 @@ function Enable-Ppp {
   if (Test-Ppp) { return $true }
   docker run --rm --privileged --pid=host --entrypoint nsenter $Image -t 1 -m modprobe ppp_async 2>&1 | Out-Null
   if (Test-Ppp) { return $true }
-  # Kernels novos do WSL (6.x) deixam os modulos onde so as distros do WSL enxergam;
-  # a distro docker-desktop usa o mesmo kernel do Docker, entao carrega por ela.
+  # Kernels novos do WSL (6.x) deixam os modulos onde so as distros do WSL enxergam.
+  # Toda distro do WSL usa o mesmo kernel do Docker: carrega pela docker-desktop
+  # ou, se nao der, pela distro padrao do usuario (Ubuntu...).
   wsl.exe -d docker-desktop -u root modprobe ppp_async 2>&1 | Out-Null
+  if (Test-Ppp) { return $true }
+  wsl.exe -u root modprobe ppp_async 2>&1 | Out-Null
   return (Test-Ppp)
 }
 

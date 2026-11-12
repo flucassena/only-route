@@ -120,10 +120,13 @@ async function ensurePpp() {
     '-t', '1', '-m', 'sh', '-c', 'uname -r; modprobe ppp_async']);
   if (await hasPpp()) return true;
   // Newer WSL kernels (6.x) keep their modules where only WSL's own distros see
-  // them; the docker-desktop distro shares Docker's kernel, so load it there.
+  // them. Every WSL distro shares Docker's kernel, so load it from the
+  // docker-desktop distro, or else from the user's default one (Ubuntu...).
   if (process.platform === 'win32') {
-    await run('wsl.exe', ['-d', 'docker-desktop', '-u', 'root', 'modprobe', 'ppp_async']);
-    if (await hasPpp()) return true;
+    for (const distro of [['-d', 'docker-desktop'], []]) {
+      await run('wsl.exe', [...distro, '-u', 'root', 'modprobe', 'ppp_async']);
+      if (await hasPpp()) return true;
+    }
   }
   pppNote = `[modprobe ppp_async] ${String((r.stdout || '') + (r.stderr || '')).trim() || 'exit ' + r.code}`;
   return false;

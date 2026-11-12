@@ -114,7 +114,12 @@ function renderChrome() {
 // GitHub release is newer than this app.
 let upd = { phase: 'none' };
 const DOWNLOAD = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>';
+let appVer = '';
 function renderUpdate() {
+  // With an update the button shows "v1.0.3 → v1.0.4", so the plain version hides.
+  const ver = $('verTxt');
+  ver.textContent = appVer ? 'v' + appVer : '';
+  ver.classList.toggle('hidden', upd.phase !== 'none');
   const b = $('updBtn');
   b.classList.toggle('hidden', upd.phase === 'none');
   b.disabled = upd.phase === 'downloading' || upd.phase === 'installing';
@@ -123,7 +128,7 @@ function renderUpdate() {
   const v = upd.version ? ` v${upd.version}` : '';
   let text = '';
   switch (upd.phase) {
-    case 'available': text = L(`Atualizar para${v}`, `Update to${v}`); break;
+    case 'available': text = L(`Atualizar: v${appVer} → v${upd.version}`, `Update: v${appVer} → v${upd.version}`); break;
     case 'downloading': text = L(`Baixando... ${Math.round((upd.progress || 0) * 100)}%`, `Downloading... ${Math.round((upd.progress || 0) * 100)}%`); break;
     case 'installing': text = L('Instalando... o app reabre sozinho', 'Installing... the app reopens by itself'); break;
     case 'manual': text = L('Abra o instalador baixado', 'Open the downloaded installer'); break;
@@ -543,6 +548,7 @@ window.api.onState((s) => {
 (async () => {
   lang = await window.api.lang();
   upd = await window.api.updateInfo();
+  appVer = await window.api.version();
   st = await window.api.state();
   await reload();
 })();

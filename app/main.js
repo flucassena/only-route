@@ -836,6 +836,7 @@ ipcMain.handle('clipboard-text', () => clipboard.readText());
 ipcMain.handle('clipboard-write', (_e, text) => clipboard.writeText(String(text || '')));
 
 ipcMain.handle('update-info', () => update);
+ipcMain.handle('version', () => currentVersion());
 ipcMain.handle('update-go', () => { installUpdate(); });
 ipcMain.handle('update-page', () => update.page && shell.openExternal(update.page));
 

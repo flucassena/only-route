@@ -32,6 +32,8 @@
   footer { padding: 10px 20px 12px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
   button.small { padding: 5px 12px; font-size: 13px; color: var(--muted); }
   button.small:hover { color: var(--text); }
+  .ver { color: var(--muted); font-size: 12px; padding: 0 2px; white-space: nowrap; }
+  footer button { white-space: nowrap; }
   button.lang { display: inline-flex; align-items: center; gap: 2px; padding: 3px 4px 3px 9px; }
   button.lang svg { margin-right: 5px; }
   button.lang .seg { padding: 1px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; letter-spacing: .3px; }
@@ -189,6 +191,7 @@
   <main id="main"></main>
   <footer id="footer">
     <button class="small lang" id="langBtn"></button>
+    <span class="ver" id="verTxt"></span>
     <button class="small upd hidden" id="updBtn"></button>
     <span class="grow"></span>
     <button class="small" id="importBtn" title="Trazer as VPNs do vpns.json do script">Importar VPNs</button>

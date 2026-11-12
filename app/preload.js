@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   clipboardText: () => ipcRenderer.invoke('clipboard-text'),
   clipboardWrite: (text) => ipcRenderer.invoke('clipboard-write', text),
   updateInfo: () => ipcRenderer.invoke('update-info'),
+  version: () => ipcRenderer.invoke('version'),
   updateGo: () => ipcRenderer.invoke('update-go'),
   updatePage: () => ipcRenderer.invoke('update-page'),
   onUpdate: (fn) => ipcRenderer.on('update', (_e, u) => fn(u)),

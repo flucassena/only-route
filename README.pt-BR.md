@@ -80,12 +80,15 @@ Os instaladores ficam na [última versão](https://github.com/flucassena/only-ro
 2. O instalador não é assinado, então o SmartScreen pode mostrar **"O Windows protegeu o computador"**. Clique em **Mais informações** e depois em **Executar assim mesmo**.
 
 **macOS**
-1. Baixe o `.dmg` do seu Mac, abra e arraste o OnlyRoute para **Aplicativos**.
-2. O app não é notarizado pela Apple, então o macOS bloqueia a primeira abertura. Rode isto uma vez no Terminal:
+1. Baixe o `.dmg` do seu Mac (`mac-arm64` para chips Apple M1/M2/M3/M4, `mac-x64` para Intel), abra e arraste o OnlyRoute para **Aplicativos**. Depois ejete a imagem de disco.
+2. O app não é assinado pela Apple, então o macOS diz que ele está **"danificado"** e não abre. Rode isto uma vez no Terminal, nesta ordem:
 
    ```sh
-   xattr -dr com.apple.quarantine /Applications/OnlyRoute.app
+   xattr -cr /Applications/OnlyRoute.app
+   codesign --force --deep -s - /Applications/OnlyRoute.app
    ```
+
+3. Abra o OnlyRoute pela pasta **Aplicativos** ou pelo Launchpad. Nunca abra de dentro do `.dmg`: essa cópia continua bloqueada.
 
 **Linux**
 - `.deb`:

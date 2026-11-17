@@ -82,12 +82,15 @@ Installers are on the [latest release](https://github.com/flucassena/only-route/
 2. The installer isn't signed, so SmartScreen may show **"Windows protected your PC"**. Click **More info**, then **Run anyway**.
 
 **macOS**
-1. Download the `.dmg` for your Mac, open it and drag OnlyRoute to **Applications**.
-2. The app isn't notarized by Apple, so macOS blocks the first launch. Run this once in Terminal:
+1. Download the `.dmg` for your Mac (`mac-arm64` for Apple chips M1/M2/M3/M4, `mac-x64` for Intel), open it and drag OnlyRoute to **Applications**. Then eject the disk image.
+2. The app isn't signed by Apple, so macOS says it's **"damaged"** and won't open it. Run these once in Terminal, in this order:
 
    ```sh
-   xattr -dr com.apple.quarantine /Applications/OnlyRoute.app
+   xattr -cr /Applications/OnlyRoute.app
+   codesign --force --deep -s - /Applications/OnlyRoute.app
    ```
+
+3. Open OnlyRoute from **Applications** or Launchpad. Never open it from inside the `.dmg`: that copy stays blocked.
 
 **Linux**
 - `.deb`:
